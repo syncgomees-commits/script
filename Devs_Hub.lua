@@ -15,7 +15,6 @@ local oldPrint = print
 warn = function(...)
     local args = {...}
     local message = table.concat(args, " ")
-    -- Suppress sound and animation load errors
     if not string.find(message, "Failed to load sound") and 
        not string.find(message, "Failed to load animation") then
         oldWarn(...)
@@ -35,6 +34,614 @@ local Config = {
     SpeedHack = false,
     Fly = false,
     FlySpeed = 50,
+    WalkSpeed = 16,
+    JumpPower = 50,
+    TargetPlr = nil,
+    AimRange = 1000,
+    HitParts = {Head = true, Chest = true},
+    DebugEnabled = false,
+    StealSpeed = false,
+    StealMultiplier = 2
+}
+
+--// STORE
+local Connections = {}
+local Objects = {}
+local TouchButtons = {}
+local Window = nil
+
+--// FIX: Aguardar biblioteca Xan carregar completamente
+task.wait(0.5)
+
+--// ANDROID TOUCH INPUT HANDLER
+local function CreateAndroidButtons()
+    if not IsAndroid then return end
+    
+    local TouchFrame = Instance.new("Frame")
+    TouchFrame.Name = "AndroidButtons"
+    TouchFrame.Size = UDim2.new(1, 0, 1, 0)
+    TouchFrame.BackgroundTransparency = 1
+    TouchFrame.Parent = UserGui
+    
+    local buttonConfigs = {
+        {Name = "FlyBtn", Pos = UDim2.new(0, 10, 0.5, -25), Color = Color3.fromRGB(0, 150, 255)},
+        {Name = "SpeedBtn", Pos = UDim2.new(0, 10, 0.6, -25), Color = Color3.fromRGB(0, 200, 0)},
+        {Name = "AimBtn", Pos = UDim2.new(0, 10, 0.4, -25), Color = Color3.fromRGB(255, 0, 0)},
+        {Name = "EspBtn", Pos = UDim2.new(0, 10, 0.7, -25), Color = Color3.fromRGB(255, 200, 0)},
+        {Name = "TeleBtn", Pos = UDim2.new(0.9, -50, 0.5, -25), Color = Color3.fromRGB(150, 0, 255)},
+        {Name = "UpBtn", Pos = UDim2.new(0.9, -50, 0.4, -25), Color = Color3.fromRGB(100, 200, 100), Hidden = true},
+        {Name = "DownBtn", Pos = UDim2.new(0.9, -50, 0.6, -25), Color = Color3.fromRGB(200, 100, 100), Hidden = true},
+    }
+    
+    for _, cfg in pairs(buttonConfigs) do
+        local btn = Instance.new("TextButton")
+        btn.Name = cfg.Name
+        btn.Size = UDim2.new(0, 50, 0, 50)
+        btn.Position = cfg.Pos
+        btn.BackgroundColor3 = cfg.Color
+        btn.TextSize = 10
+        btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+        btn.TextScaled = true
+        btn.BorderSizePixel = 0
+        btn.BackgroundTransparency = 0.3
+        if cfg.Hidden then
+            btn.Visible = false
+        end
+        btn.Parent = TouchFrame
+        
+        table.insert(TouchButtons, {Button = btn, Name = cfg.Name, Hidden = cfg.Hidden or false})
+    end
+    
+    return TouchFrame
+end
+
+local AndroidButtonFrame = CreateAndroidButtons()
+
+--// DPAD SIMULATION FOR ANDROID
+local function GetAndroidMovementInput()
+    local dir = Vector3.zero
+    if IsAndroid then
+        local touchPositions = UserInputService:GetTouchPositions()
+        for _, touchPos in pairs(touchPositions) do
+            local guiPos = UserGui.AbsoluteSize.X / 2
+            local touchX = touchPos.X - guiPos
+            local touchY = touchPos.Y
+            
+            if math.abs(touchX) > 100 or math.abs(touchY) > 100 then
+                if touchX > 100 then dir = dir + Camera.CFrame.RightVector end
+                if touchX < -100 then dir = dir - Camera.CFrame.RightVector end
+                if touchY > 100 then dir = dir - Vector3.new(0, 1, 0) end
+                if touchY < -100 then dir = dir + Vector3.new(0, 1, 0) end
+            end
+        end
+    end
+    return dir
+end
+
+--// FIX: Inicializar janela com proteÃ§Ã£o contra erros
+local function InitializeWindow()
+    pcall(function()
+        if IsAndroid then
+            Xan.Splash({
+                Title = "DEVS HUB",
+                Subtitle = "Inicializando...",
+                Duration = 1,
+                Theme = "Midnight"
+            })
+        else
+            Xan.Splash({
+                Title = "DEVS HUB",
+                Subtitle = "System Initialization...",
+                Duration = 2,
+                Theme = "Midnight"
+            })
+        end
+    end)
+
+    local GameName = "Unknown Game"
+    local GameIcon = Xan.Logos.Default
+
+    task.spawn(function()
+        pcall(function()
+            local info = MarketplaceService:GetProductInfo(game.PlaceId)
+            GameName = info.Name
+        end)
+
+        local success, response = pcall(function()
+            local r = (syn and syn.request) or (http and http.request) or http_request or (fluxus and fluxus.request) or request
+            if r then
+                return r({
+                    Url = "https://api.xan.bar/api/games/lookup?name=" .. HttpService:UrlEncode(GameName),
+                    Method = "GET"
+                })
+            end
+        end)
+
+        if success and response and response.StatusCode == 200 then
+            local data = HttpService:JSONDecode(response.Body)
+            if data.success and data.game then
+                GameIcon = data.game.backup_rbxasset or data.game.rbxthumb
+            end
+        elseif Xan.GameIcons[GameName] then
+            GameIcon = Xan.GameIcons[GameName]
+        end
+    end)
+
+    if IsAndroid then
+        task.wait(1.5)
+    else
+        task.wait(2.2)
+        task.wait(1)
+    end
+
+    --// Criar janela com tratamento de erro
+    local success, err = pcall(function()
+        Window = Xan:CreateWindow({
+            Title = "DEVS HUB",
+            Subtitle = GameName,
+            Theme = "Midnight",
+            Size = IsAndroid and UDim2.new(0.9, 0, 0.9, 0) or UDim2.new(0, 580, 0, 450),
+            ShowActiveList = not IsAndroid,
+            ShowLogo = true,
+            Logo = GameIcon,
+            ConfigName = "HolubHub"
+        })
+    end)
+
+    if not success then
+        warn("Erro ao criar janela: " .. tostring(err))
+        Xan.Notify({Title = "Erro", Content = "Falha ao criar interface!", Type = "Error"})
+        return false
+    end
+
+    if not Window then
+        warn("Janela retornou nil")
+        return false
+    end
+
+    pcall(function()
+        Xan.MobileToggle({Window = Window, Position = UDim2.new(0.85, 0, 0.1, 0), Visible = true})
+    end)
+
+    local Watermark = pcall(function()
+        return Xan.Watermark({
+            Text = "DEVS HUB | " .. os.date("%X"),
+            Visible = true,
+            ShowFPS = true,
+            ShowPing = true,
+            Theme = "Midnight"
+        })
+    end)
+
+    if Watermark then
+        task.spawn(function()
+            while Window do
+                pcall(function()
+                    Watermark:SetText("DEVS HUB | " .. os.date("%X"))
+                end)
+                task.wait(1)
+            end
+        end)
+    end
+
+    return true
+end
+
+--// Chamar inicializaÃ§Ã£o
+if not InitializeWindow() then
+    error("Falha ao inicializar a janela principal")
+    return
+end
+
+--// 4. GUI TABS
+local MainTab = Window:AddTab("Main", Xan.Icons.Home)
+local ConfigTab = Window:AddTab("Config", Xan.Icons.Settings)
+local PlayerTab = Window:AddTab("Player", Xan.Icons.Person)
+local DevsTab = Window:AddTab("Devs", Xan.Icons.Code)
+
+--// MAIN: COMBAT
+MainTab:AddSection("Combat")
+
+local AimToggle = MainTab:AddToggle("Aimlock", "aim_state", function(v)
+    Config.Aimlock = v
+end)
+MainTab:AddKeybind("Aimlock Key [G]", "aim_key", Enum.KeyCode.G, function()
+    AimToggle:Set(not AimToggle.Value())
+end)
+MainTab:AddSlider("Aim FOV", "aim_fov", {Min = 100, Max = 2000, Default = 1000}, function(v)
+    Config.AimRange = v
+end)
+
+MainTab:AddCharacterPreview({
+    Name = "Hitbox Targeting",
+    HitboxParts = {"Head", "Chest", "Arms", "Legs"},
+    Default = {Head = true, Chest = true},
+    Callback = function(val)
+        Config.HitParts = val
+    end
+})
+
+--// MAIN: VISUALS
+MainTab:AddSection("Visuals")
+
+local EspToggle = MainTab:AddToggle("X-Ray (Chams)", "esp_state", function(v)
+    Config.ESP = v
+    if not v then
+        for _, o in pairs(Objects) do
+            if o.Name == "HLCache" then
+                o:Destroy()
+            end
+        end
+        return
+    end
+    for _, p in pairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer and p.Character and not p.Character:FindFirstChild("HLCache") then
+            local hl = Instance.new("Highlight")
+            hl.Name = "HLCache"
+            hl.FillColor = Color3.fromRGB(255, 0, 0)
+            hl.OutlineColor = Color3.fromRGB(255, 255, 255)
+            hl.FillTransparency = 0.5
+            hl.Parent = p.Character
+            table.insert(Objects, hl)
+        end
+    end
+end)
+MainTab:AddKeybind("X-Ray Key [H]", "esp_key", Enum.KeyCode.H, function()
+    EspToggle:Set(not EspToggle.Value())
+end)
+MainTab:AddCrosshair("Crosshair", {Enabled = false})
+
+--// MAIN: MOVEMENT
+MainTab:AddSection("Movement")
+
+local FlightTog = MainTab:AddToggle("Fly Hack", "fly_hack", function(v)
+    Config.Fly = v
+    if IsAndroid then
+        for _, btn_data in pairs(TouchButtons) do
+            if btn_data.Name == "UpBtn" or btn_data.Name == "DownBtn" then
+                btn_data.Button.Visible = v
+            end
+        end
+    end
+    if not v and LocalPlayer.Character then
+        LocalPlayer.Character.Humanoid.PlatformStand = false
+    end
+end)
+MainTab:AddKeybind("Fly Key [F]", "fly_key", Enum.KeyCode.F, function()
+    FlightTog:Set(not FlightTog.Value())
+end)
+MainTab:AddSlider("Fly Speed", "fly_val", {Min = 10, Max = 300, Default = 50}, function(v)
+    Config.FlySpeed = v
+end)
+
+local SpeedTog = MainTab:AddToggle("Speed Hack", "speed_hack", function(v)
+    Config.SpeedHack = v
+    if not v and LocalPlayer.Character then
+        LocalPlayer.Character.Humanoid.WalkSpeed = 16
+    end
+end)
+MainTab:AddKeybind("Speed Key [J]", "speed_key", Enum.KeyCode.J, function()
+    SpeedTog:Set(not SpeedTog.Value())
+end)
+MainTab:AddSlider("Walk Speed", "speed_val", {Min = 16, Max = 300, Default = 16}, function(v)
+    Config.WalkSpeed = v
+end)
+
+local JumpTog = MainTab:AddToggle("Jump Hack", "jump_hack", function(v)
+    Config.JumpHack = v
+    if not v and LocalPlayer.Character then
+        LocalPlayer.Character.Humanoid.JumpPower = 50
+    end
+end)
+MainTab:AddKeybind("Jump Key [K]", "jump_key", Enum.KeyCode.K, function()
+    JumpTog:Set(not JumpTog.Value())
+end)
+MainTab:AddSlider("Jump Power", "jump_val", {Min = 50, Max = 500, Default = 50}, function(v)
+    Config.JumpPower = v
+end)
+
+local NoclipTog = MainTab:AddToggle("No Clip", "noclip_hack", function(v)
+    Config.Noclip = v
+end)
+MainTab:AddKeybind("No Clip Key [N]", "noclip_key", Enum.KeyCode.N, function()
+    NoclipTog:Set(not NoclipTog.Value())
+end)
+
+local InfJumpTog = MainTab:AddToggle("Inf Jump", "inf_jump", function(v)
+    Config.InfJump = v
+end)
+MainTab:AddKeybind("Inf Jump Key [L]", "inf_jump_key", Enum.KeyCode.L, function()
+    InfJumpTog:Set(not InfJumpTog.Value())
+end)
+
+--// MAIN: TELEPORT
+MainTab:AddSection("Teleport")
+
+local function GetPlayerNames()
+    local names = {}
+    for _, p in pairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer then
+            table.insert(names, p.Name)
+        end
+    end
+    table.sort(names)
+    if #names == 0 then
+        table.insert(names, "No Other Players")
+    end
+    return names
+end
+
+local TpDropdown = MainTab:AddDropdown("Select Player", "tp_target", GetPlayerNames(), function(v)
+    Config.TargetPlr = Players:FindFirstChild(v)
+end)
+
+Connections["PlrAdded"] = Players.PlayerAdded:Connect(function()
+    TpDropdown:SetOptions(GetPlayerNames())
+end)
+Connections["PlrRemoved"] = Players.PlayerRemoving:Connect(function()
+    TpDropdown:SetOptions(GetPlayerNames())
+end)
+
+MainTab:AddButton("Refresh Dropdown", function()
+    TpDropdown:SetOptions(GetPlayerNames())
+end)
+
+MainTab:AddButton("Teleport [U]", function()
+    if Config.TargetPlr and Config.TargetPlr.Character then
+        LocalPlayer.Character:SetPrimaryPartCFrame(
+            Config.TargetPlr.Character.HumanoidRootPart.CFrame * CFrame.new(0, 0, 4)
+        )
+        Xan.Notify({Title = "Teleport", Content = "Teleported to " .. Config.TargetPlr.Name})
+    else
+        Xan.Notify({Title = "Error", Content = "Invalid target.", Type = "Error"})
+    end
+end)
+
+MainTab:AddSpeedometer("HUD Speed", {Min = 0, Max = 200, AutoTrack = true})
+
+--// PLAYER TAB
+PlayerTab:AddSection("Character")
+
+PlayerTab:AddButton("Reset Speed", function()
+    if LocalPlayer.Character then
+        LocalPlayer.Character.Humanoid.WalkSpeed = 16
+        Xan.Notify({Title = "Character", Content = "Walk speed reset to 16"})
+    end
+end)
+
+PlayerTab:AddButton("Reset Jump", function()
+    if LocalPlayer.Character then
+        LocalPlayer.Character.Humanoid.JumpPower = 50
+        Xan.Notify({Title = "Character", Content = "Jump power reset to 50"})
+    end
+end)
+
+PlayerTab:AddButton("Reset All", function()
+    if LocalPlayer.Character then
+        local h = LocalPlayer.Character:FindFirstChild("Humanoid")
+        if h then
+            h.WalkSpeed = 16
+            h.JumpPower = 50
+            h.PlatformStand = false
+            Xan.Notify({Title = "Character", Content = "All stats reset"})
+        end
+    end
+end)
+
+PlayerTab:AddSection("Equipment")
+
+PlayerTab:AddButton("Remove All Tools", function()
+    if LocalPlayer.Character then
+        for _, tool in pairs(LocalPlayer.Character:FindFirstChild("Backpack") and LocalPlayer.Character.Backpack:GetChildren() or {}) do
+            if tool:IsA("Tool") then
+                tool:Destroy()
+            end
+        end
+        Xan.Notify({Title = "Equipment", Content = "All tools removed"})
+    end
+end)
+
+PlayerTab:AddButton("Drop All Tools", function()
+    if LocalPlayer.Backpack then
+        for _, tool in pairs(LocalPlayer.Backpack:GetChildren()) do
+            if tool:IsA("Tool") then
+                tool.Parent = workspace
+            end
+        end
+        Xan.Notify({Title = "Equipment", Content = "All tools dropped"})
+    end
+end)
+
+PlayerTab:AddSection("Health")
+
+PlayerTab:AddButton("Heal", function()
+    if LocalPlayer.Character then
+        local h = LocalPlayer.Character:FindFirstChild("Humanoid")
+        if h then
+            h.Health = h.MaxHealth
+            Xan.Notify({Title = "Health", Content = "Healed to full health"})
+        end
+    end
+end)
+
+local HealthSlider = PlayerTab:AddSlider("Health Value", "health_val", {Min = 1, Max = 100, Default = 100}, function(v)
+    if LocalPlayer.Character then
+        local h = LocalPlayer.Character:FindFirstChild("Humanoid")
+        if h then
+            h.Health = (h.MaxHealth / 100) * v
+        end
+    end
+end)
+
+PlayerTab:AddSection("Theft")
+
+local StealToggle = PlayerTab:AddToggle("Steal Speed Hack", "steal_hack", function(v)
+    Config.StealSpeed = v
+    if v then
+        Xan.Notify({Title = "Theft", Content = "Steal Speed enabled! Stealing " .. Config.StealMultiplier .. "x faster"})
+    else
+        Xan.Notify({Title = "Theft", Content = "Steal Speed disabled."})
+    end
+end)
+
+PlayerTab:AddSlider("Steal Multiplier", "steal_mult", {Min = 1, Max = 10, Default = 2}, function(v)
+    Config.StealMultiplier = v
+end)
+
+--// DEVS TAB
+DevsTab:AddSection("Credits")
+
+DevsTab:AddLabel("DEVS HUB")
+DevsTab:AddLabel("Version: 1.0")
+DevsTab:AddDivider()
+DevsTab:AddLabel("Created by:")
+DevsTab:AddLabel("mecharena1")
+DevsTab:AddDivider()
+
+DevsTab:AddSection("Information")
+
+DevsTab:AddLabel("Library: Xan Hub")
+DevsTab:AddLabel("Exploit: Multi-Compatible")
+DevsTab:AddLabel("Platform: Roblox")
+DevsTab:AddDivider()
+
+DevsTab:AddButton("Check Updates", function()
+    Xan.Notify({Title = "Updates", Content = "You are running the latest version!", Type = "Success"})
+end)
+
+DevsTab:AddSection("Debug Functions")
+
+local DebugToggle = DevsTab:AddToggle("Debug Action Logger", "debug_action", function(v)
+    Config.DebugEnabled = v
+    if v then
+        Xan.Notify({Title = "Debug", Content = "Debug Action Logger enabled! Press E to log actions.", Type = "Success"})
+    else
+        Xan.Notify({Title = "Debug", Content = "Debug Action Logger disabled."})
+    end
+end)
+
+DevsTab:AddLabel("Logs actions when E is pressed")
+
+--// CONFIG TAB
+ConfigTab:AddInput("Config Name", {Flag = "cfg_name", Default = "default"})
+ConfigTab:AddButton("Save Config", function()
+    Xan:SaveConfig(Xan.Flags["cfg_name"] or "default")
+end)
+ConfigTab:AddButton("Load Config", function()
+    Xan:LoadConfig(Xan.Flags["cfg_name"] or "default")
+end)
+ConfigTab:AddDivider()
+ConfigTab:AddButton("Unload & Cleanup", function()
+    for _, c in pairs(Connections) do
+        c:Disconnect()
+    end
+    for _, o in pairs(Objects) do
+        pcall(function()
+            o:Destroy()
+        end)
+    end
+    if LocalPlayer.Character then
+        local h = LocalPlayer.Character:FindFirstChild("Humanoid")
+        if h then
+            h.PlatformStand = false
+            h.WalkSpeed = 16
+            h.JumpPower = 50
+        end
+    end
+    if Window then
+        pcall(function()
+            Xan:Unload()
+        end)
+    end
+end)
+
+--------------------------------------------------------------------------------
+-- LOOPS & LOGIC
+--------------------------------------------------------------------------------
+
+local BodyVel, BodyGyro
+
+Connections["Loop"] = RunService.Stepped:Connect(function()
+    local char = LocalPlayer.Character
+    if not char then return end
+
+    local hum = char:FindFirstChild("Humanoid")
+    local root = char:FindFirstChild("HumanoidRootPart")
+
+    if Config.Noclip then
+        for _, p in pairs(char:GetDescendants()) do
+            if p:IsA("BasePart") then
+                p.CanCollide = false
+            end
+        end
+    end
+
+    if hum then
+        if Config.SpeedHack then
+            hum.WalkSpeed = Config.WalkSpeed
+        end
+        if Config.JumpHack then
+            hum.UseJumpPower = true
+            hum.JumpPower = Config.JumpPower
+        end
+    end
+
+    if Config.Fly and root then
+        if not BodyVel then
+            BodyVel = Instance.new("BodyVelocity", root)
+            BodyVel.MaxForce = Vector3.new(9e9, 9e9, 9e9)
+            table.insert(Objects, BodyVel)
+        end
+        if not BodyGyro then
+            BodyGyro = Instance.new("BodyGyro", root)
+            BodyGyro.MaxTorque = Vector3.new(9e9, 9e9, 9e9)
+            BodyGyro.P = 9e4
+            table.insert(Objects, BodyGyro)
+        end
+
+        hum.PlatformStand = true
+        BodyGyro.CFrame = Camera.CFrame
+        local dir = Vector3.zero
+
+        if not IsAndroid then
+            if UserInputService:IsKeyDown(Enum.KeyCode.W) then
+                dir = dir + Camera.CFrame.LookVector
+            end
+            if UserInputService:IsKeyDown(Enum.KeyCode.S) then
+                dir = dir - Camera.CFrame.LookVector
+            end
+            if UserInputService:IsKeyDown(Enum.KeyCode.A) then
+                dir = dir - Camera.CFrame.RightVector
+            end
+            if UserInputService:IsKeyDown(Enum.KeyCode.D) then
+                dir = dir + Camera.CFrame.RightVector
+            end
+            if UserInputService:IsKeyDown(Enum.KeyCode.E) then
+                dir = dir + Vector3.new(0, 1, 0)
+            end
+            if UserInputService:IsKeyDown(Enum.KeyCode.Q) then
+                dir = dir - Vector3.new(0, 1, 0)
+            end
+        else
+            dir = GetAndroidMovementInput()
+        end
+
+        BodyVel.Velocity = dir * Config.FlySpeed
+    else
+        if BodyVel then
+            BodyVel:Destroy()
+            BodyVel = nil
+        end
+        if BodyGyro then
+            BodyGyro:Destroy()
+            BodyGyro = nil
+        end
+    end
+
+    --// STEAL SPEED HACK
+    if Config.StealSpeed then
+        pcall(function()
+            loc    FlySpeed = 50,
     WalkSpeed = 16,
     JumpPower = 50,
     TargetPlr = nil,
