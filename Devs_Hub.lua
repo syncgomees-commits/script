@@ -1,4 +1,4 @@
-local Xan = loadstring(game:HttpGet("https://xan.bar/init.lua"))()
+local Xan = loadstring(game:HttpGet("https://raw.githubusercontent.com/syncgomees-commits/Devs_Hub/refs/heads/main/init.lua"))()
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
